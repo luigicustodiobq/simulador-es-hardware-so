@@ -1,0 +1,1012 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Simulador de E/S: Polling × Interrupção × DMA</title>
+<meta name="description" content="Simulador didático ciclo a ciclo de Entrada e Saída: Polling (E/S programada), Interrupção e DMA. Grupo 6 – Entrada e Saída / Hardware.">
+<style>
+/* ==========================================================================
+   TEMA (modo escuro de alto contraste)
+   Todas as cores ficam em variáveis para manter consistência (Nielsen #4).
+   ========================================================================== */
+:root {
+  --fundo: #0d1117;
+  --painel: #161b22;
+  --painel-2: #1f2630;
+  --borda: #3a4452;
+  --texto: #f0f3f6;
+  --texto-suave: #b4bfcc;
+  --destaque: #58a6ff;
+  --util: #2ea043;        /* verde: trabalho útil da CPU            */
+  --espera: #e5534b;      /* vermelho: busy-waiting / cópia pela CPU */
+  --isr: #f2a33a;         /* âmbar: interrupção / configuração       */
+  --vazio: #2a313c;
+  --erro-fundo: #3d1418;
+  --erro-borda: #f47067;
+  --ok-fundo: #12301d;
+  --raio: 10px;
+  --fonte: system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--fundo);
+  color: var(--texto);
+  font-family: var(--fonte);
+  font-size: 15px;
+  line-height: 1.5;
+}
+a { color: var(--destaque); }
+button, input, select { font: inherit; color: inherit; }
+:focus-visible { outline: 3px solid var(--destaque); outline-offset: 2px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* ---------- Cabeçalho ---------- */
+header.topo {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 14px 20px; border-bottom: 1px solid var(--borda); background: var(--painel);
+}
+header.topo h1 { font-size: 1.25rem; margin: 0; }
+header.topo p { margin: 2px 0 0; color: var(--texto-suave); font-size: .9rem; }
+
+/* ---------- Layout ---------- */
+main.layout {
+  display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 16px;
+  padding: 16px 20px 32px; max-width: 1400px; margin: 0 auto;
+}
+@media (max-width: 900px) {
+  main.layout { grid-template-columns: minmax(0, 1fr); padding: 12px 16px 28px; }
+}
+.painel {
+  background: var(--painel); border: 1px solid var(--borda); border-radius: var(--raio);
+  padding: 14px 16px; min-width: 0;
+}
+.painel + .painel { margin-top: 16px; }
+.painel h2 { font-size: 1rem; margin: 0 0 10px; }
+.coluna-principal { min-width: 0; }
+
+/* ---------- Formulário ---------- */
+.campo { margin-bottom: 12px; }
+.campo label, .campo .rotulo { display: block; font-weight: 600; margin-bottom: 4px; }
+.campo small { display: block; color: var(--texto-suave); font-size: .82rem; }
+.campo input[type=number], .campo select {
+  width: 100%; padding: 8px 10px; background: var(--painel-2); border: 1px solid var(--borda);
+  border-radius: 8px;
+}
+.campo input[aria-invalid="true"] { border-color: var(--erro-borda); background: var(--erro-fundo); }
+.msg-erro { color: #ffb3ad; font-size: .85rem; margin-top: 4px; min-height: 0; }
+.msg-erro:empty { display: none; }
+.modos { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.modos label {
+  display: flex; align-items: center; gap: 6px; padding: 7px 8px; border: 1px solid var(--borda);
+  border-radius: 8px; cursor: pointer; background: var(--painel-2); font-weight: 500; margin: 0;
+}
+.modos input { accent-color: var(--destaque); }
+.modos label:has(input:checked) { border-color: var(--destaque); background: #102a47; }
+.presets { display: grid; gap: 6px; }
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 8px 12px; border-radius: 8px; border: 1px solid var(--borda);
+  background: var(--painel-2); cursor: pointer; font-weight: 600;
+}
+.btn:hover:not(:disabled) { border-color: var(--destaque); }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn.primario { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+.btn.primario:hover:not(:disabled) { background: #388bfd; }
+.btn.preset { justify-content: flex-start; text-align: left; font-weight: 500; }
+.btn.preset strong { font-weight: 700; }
+.btn.link { background: none; border: none; color: var(--destaque); padding: 4px 0; text-decoration: underline; }
+.aviso {
+  padding: 8px 10px; border-radius: 8px; font-size: .88rem; margin-top: 10px;
+  border: 1px solid var(--borda); background: var(--painel-2);
+}
+.aviso.erro { border-color: var(--erro-borda); background: var(--erro-fundo); color: #ffd7d3; }
+.aviso.ok { border-color: var(--util); background: var(--ok-fundo); }
+.aviso:empty { display: none; }
+
+/* ---------- Barra de controles ---------- */
+.controles { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.controles .velocidade { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.controles select { padding: 7px 8px; background: var(--painel-2); border: 1px solid var(--borda); border-radius: 8px; }
+.atalhos { color: var(--texto-suave); font-size: .82rem; margin-top: 8px; }
+kbd {
+  font-family: var(--mono); font-size: .8rem; padding: 1px 6px; border: 1px solid var(--borda);
+  border-bottom-width: 2px; border-radius: 4px; background: var(--painel-2);
+}
+.status-linha { display: flex; flex-wrap: wrap; gap: 6px 16px; color: var(--texto-suave); font-size: .88rem; margin-top: 10px; }
+.status-linha b { color: var(--texto); }
+
+/* ---------- Métricas ---------- */
+.metricas { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+.metrica { background: var(--painel-2); border: 1px solid var(--borda); border-radius: 8px; padding: 8px 10px; }
+.metrica .rot { font-size: .8rem; color: var(--texto-suave); }
+.metrica .val { font-size: 1.35rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.metrica .det { font-size: .78rem; color: var(--texto-suave); }
+
+/* ---------- Explicação do ciclo ---------- */
+.explicacao {
+  border-left: 4px solid var(--destaque); background: var(--painel-2); padding: 10px 12px;
+  border-radius: 0 8px 8px 0; min-height: 3em;
+}
+.explicacao .ciclo-rot { font-family: var(--mono); color: var(--destaque); font-weight: 700; margin-right: 6px; }
+.explicacao p { margin: 0; }
+.explicacao p + p { margin-top: 6px; }
+
+/* ---------- Diagrama (SVG) ---------- */
+.diagrama-wrap { width: 100%; overflow-x: auto; }
+@media (max-width: 600px) { svg.diagrama { min-width: 560px; } } /* no celular o diagrama rola dentro do painel e o texto continua legível */
+svg.diagrama { width: 100%; height: auto; display: block; }
+.comp rect.caixa { fill: var(--painel-2); stroke: var(--borda); stroke-width: 2; transition: fill .2s, stroke .2s; }
+.comp text { fill: var(--texto); font-family: var(--fonte); }
+.comp text.titulo { font-weight: 700; font-size: 17px; }
+.comp text.estado { font-size: 14px; fill: var(--texto-suave); }
+.comp.ativo rect.caixa { stroke: var(--destaque); stroke-width: 3; }
+.comp.inativo { opacity: .38; }
+#cpu.util rect.caixa { fill: #123d1f; stroke: var(--util); }
+#cpu.espera rect.caixa { fill: #4a1a1a; stroke: var(--espera); }
+#cpu.isr rect.caixa { fill: #4a3210; stroke: var(--isr); }
+#dev.ocupado rect.caixa { stroke: var(--isr); }
+#dev.pronto rect.caixa { stroke: var(--util); fill: #123d1f; }
+#plic.ativo rect.caixa, #dma.ativo rect.caixa { fill: #102a47; }
+.lig { stroke: #4b5666; stroke-width: 4; fill: none; stroke-linecap: round; transition: stroke .2s; }
+.lig.irq { stroke-dasharray: 7 6; stroke-width: 3; }
+.lig.ativa { stroke: var(--destaque); stroke-width: 6; }
+.lig.irq.ativa { stroke: var(--isr); stroke-width: 4; }
+.rot-lig { fill: var(--texto-suave); font-size: 12px; font-family: var(--fonte); }
+.slot-ram { fill: var(--vazio); stroke: var(--borda); }
+.slot-ram.cheio { fill: var(--destaque); stroke: var(--destaque); }
+.barra-prog-fundo { fill: var(--vazio); }
+.barra-prog { fill: var(--isr); transition: width .2s; }
+
+/* ---------- Gantt ---------- */
+.legenda { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: .85rem; margin-bottom: 8px; }
+.legenda span { display: inline-flex; align-items: center; gap: 6px; }
+.legenda i { width: 14px; height: 14px; border-radius: 3px; display: inline-block; }
+.gantt-rolagem { overflow-x: auto; padding-bottom: 6px; }
+.gantt { display: grid; gap: 4px; min-width: max-content; }
+.gantt-linha { display: flex; align-items: center; gap: 2px; }
+.gantt-rot { width: 98px; flex: 0 0 98px; align-self: stretch; display: flex; align-items: center; font-size: .82rem; font-weight: 600; color: var(--texto-suave); position: sticky; left: 0; background: var(--painel); padding-right: 6px; z-index: 1; }
+.gantt-linha { background: var(--painel); }
+.cel {
+  width: 26px; height: 30px; flex: 0 0 26px; border-radius: 4px; background: var(--vazio);
+  font-size: 10px; font-family: var(--mono); color: #8b96a5; display: flex; align-items: flex-end;
+  justify-content: center; padding-bottom: 1px; position: relative; border: 2px solid transparent;
+}
+.cel.util { background: var(--util); color: #fff; }
+.cel.espera { background: var(--espera); color: #fff; }
+.cel.isr { background: var(--isr); color: #1b1300; }
+.cel.atual { border-color: #fff; }
+.cel.fim { background: transparent; border: 1px dashed #2f3743; color: transparent; }
+.cel .raio { position: absolute; top: 1px; left: 0; right: 0; text-align: center; font-size: 11px; line-height: 1; }
+
+/* ---------- Comparação ---------- */
+table.tabela { width: 100%; border-collapse: collapse; font-size: .9rem; font-variant-numeric: tabular-nums; }
+table.tabela th, table.tabela td { padding: 7px 8px; border-bottom: 1px solid var(--borda); text-align: left; }
+table.tabela th { color: var(--texto-suave); font-weight: 600; }
+.tabela-rolagem { overflow-x: auto; }
+.mensagens-comparar p { margin: 0 0 6px; }
+.mensagens-comparar b { display: inline-block; min-width: 92px; }
+
+/* ---------- Fórmulas ---------- */
+details.formulas summary { cursor: pointer; font-weight: 600; }
+details.formulas code, .ajuda code { font-family: var(--mono); background: var(--painel-2); padding: 1px 5px; border-radius: 4px; font-size: .88rem; }
+details.formulas ul { padding-left: 18px; margin: 8px 0 0; }
+details.formulas li { margin-bottom: 6px; }
+
+/* ---------- Modal de ajuda ---------- */
+dialog.ajuda {
+  max-width: 760px; width: calc(100% - 32px); max-height: calc(100vh - 48px);
+  background: var(--painel); color: var(--texto); border: 1px solid var(--borda); border-radius: var(--raio); padding: 0;
+}
+dialog.ajuda::backdrop { background: rgba(0,0,0,.7); }
+.ajuda-topo { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--borda); position: sticky; top: 0; background: var(--painel); }
+.ajuda-topo h2 { margin: 0; font-size: 1.1rem; }
+.ajuda-corpo { padding: 4px 18px 18px; }
+.ajuda-corpo h3 { font-size: 1rem; margin: 16px 0 6px; }
+.ajuda-corpo p, .ajuda-corpo li { color: #dfe5ec; }
+[hidden] { display: none !important; }
+footer.rodape { text-align: center; color: var(--texto-suave); font-size: .82rem; padding: 0 16px 24px; }
+</style>
+</head>
+<body>
+
+<header class="topo">
+  <div>
+    <h1>Simulador de E/S: Polling × Interrupção × DMA</h1>
+    <p>Grupo 6 – Entrada e Saída / Hardware · simulação didática ciclo a ciclo</p>
+  </div>
+  <button class="btn" id="btnAjuda" type="button" aria-haspopup="dialog" title="Abrir ajuda (atalho: H)">❓ Ajuda e Conceitos</button>
+</header>
+
+<main class="layout">
+  <!-- =================== COLUNA DE CONFIGURAÇÃO =================== -->
+  <aside>
+    <section class="painel" aria-labelledby="tituloConfig">
+      <h2 id="tituloConfig">1. Configuração</h2>
+
+      <div class="campo" role="radiogroup" aria-labelledby="rotModo">
+        <span class="rotulo" id="rotModo">Modo de E/S</span>
+        <div class="modos">
+          <label><input type="radio" name="modo" value="polling" checked> Polling</label>
+          <label><input type="radio" name="modo" value="interrupcao"> Interrupção</label>
+          <label><input type="radio" name="modo" value="dma"> DMA</label>
+          <label><input type="radio" name="modo" value="comparar"> Comparar os 3</label>
+        </div>
+      </div>
+
+      <div class="campo">
+        <label for="inBytes">Quantidade de bytes</label>
+        <input type="number" id="inBytes" min="2" max="16" step="1" value="4" inputmode="numeric" aria-describedby="ajBytes erroBytes">
+        <small id="ajBytes">Bytes a transferir do dispositivo para a RAM (2 a 16).</small>
+        <div class="msg-erro" id="erroBytes" role="alert"></div>
+      </div>
+
+      <div class="campo">
+        <label for="inLatencia">Latência do dispositivo (ciclos)</label>
+        <input type="number" id="inLatencia" min="2" max="10" step="1" value="4" inputmode="numeric" aria-describedby="ajLatencia erroLatencia">
+        <small id="ajLatencia">Ciclos de CPU que o dispositivo leva para preparar cada byte (2 a 10).</small>
+        <div class="msg-erro" id="erroLatencia" role="alert"></div>
+      </div>
+
+      <div class="campo">
+        <label for="inCusto">Custo de interrupção (ciclos)</label>
+        <input type="number" id="inCusto" min="1" max="3" step="1" value="2" inputmode="numeric" aria-describedby="ajCusto erroCusto">
+        <small id="ajCusto">Ciclos da troca de contexto + rotina de tratamento (ISR) (1 a 3).</small>
+        <div class="msg-erro" id="erroCusto" role="alert"></div>
+      </div>
+
+      <div class="aviso erro" id="avisoInvalido" role="status" aria-live="polite"></div>
+      <button class="btn link" type="button" id="btnPadrao" title="Volta para 4 bytes, latência 4 e custo 2">Restaurar valores padrão</button>
+    </section>
+
+    <section class="painel" aria-labelledby="tituloPresets">
+      <h2 id="tituloPresets">Presets (1 clique)</h2>
+      <div class="presets">
+        <button class="btn preset" type="button" data-preset="uart"><span><strong>Teclado/UART lento</strong><br><small>3 bytes · latência 10 · custo 2</small></span></button>
+        <button class="btn preset" type="button" data-preset="virtio"><span><strong>Disco VirtIO</strong><br><small>16 bytes · latência 4 · custo 2</small></span></button>
+        <button class="btn preset" type="button" data-preset="alta"><span><strong>Alta taxa de dados</strong><br><small>16 bytes · latência 2 · custo 3</small></span></button>
+      </div>
+      <div class="aviso ok" id="avisoPreset" role="status" aria-live="polite"></div>
+    </section>
+  </aside>
+
+  <!-- =================== COLUNA PRINCIPAL =================== -->
+  <div class="coluna-principal">
+    <section class="painel" aria-labelledby="tituloControles">
+      <h2 id="tituloControles">2. Execução</h2>
+      <div class="controles">
+        <button class="btn" type="button" id="btnAnterior" title="Voltar um ciclo (seta ←)">◀ Anterior</button>
+        <button class="btn primario" type="button" id="btnPlay" title="Reproduzir/Pausar (Espaço)">▶ Reproduzir</button>
+        <button class="btn" type="button" id="btnProximo" title="Avançar um ciclo (seta →)">Próximo ▶</button>
+        <button class="btn" type="button" id="btnReiniciar" title="Voltar ao ciclo 0 e limpar tudo (R)">⟲ Reiniciar</button>
+        <label class="velocidade" for="selVelocidade">Velocidade
+          <select id="selVelocidade">
+            <option value="1200">Lenta</option>
+            <option value="700" selected>Normal</option>
+            <option value="350">Rápida</option>
+            <option value="150">Muito rápida</option>
+          </select>
+        </label>
+      </div>
+      <div class="atalhos">Atalhos: <kbd>←</kbd> anterior · <kbd>→</kbd> próximo · <kbd>Espaço</kbd> reproduzir/pausar · <kbd>R</kbd> reiniciar · <kbd>H</kbd> ajuda</div>
+      <div class="status-linha" aria-live="polite">
+        <span>Modo: <b id="stModo">Polling</b></span>
+        <span>Cenário: <b id="stCenario">4 bytes · latência 4 · custo 2</b></span>
+        <span>Estado: <b id="stEstado">Pronto para iniciar</b></span>
+      </div>
+    </section>
+
+    <section class="painel" aria-labelledby="tituloExplicacao">
+      <h2 id="tituloExplicacao">O que aconteceu neste ciclo</h2>
+      <div class="explicacao" id="explicacao" aria-live="polite"></div>
+    </section>
+
+    <section class="painel" aria-labelledby="tituloMetricas">
+      <h2 id="tituloMetricas">Métricas em tempo real</h2>
+      <div class="metricas" id="metricasUnico">
+        <div class="metrica"><div class="rot">Ciclo atual / total</div><div class="val" id="mCiclo">0 / 0</div></div>
+        <div class="metrica"><div class="rot">CPU em E/S</div><div class="val" id="mES">0</div><div class="det">ciclos (vermelho + âmbar)</div></div>
+        <div class="metrica"><div class="rot">CPU livre (útil)</div><div class="val" id="mLivre">0</div><div class="det">ciclos (verde)</div></div>
+        <div class="metrica"><div class="rot">Aproveitamento da CPU</div><div class="val" id="mAprov">0%</div><div class="det">livres ÷ ciclos executados</div></div>
+        <div class="metrica"><div class="rot">Interrupções</div><div class="val" id="mIrq">0</div></div>
+        <div class="metrica"><div class="rot">Bytes na RAM</div><div class="val" id="mBytes">0 / 0</div></div>
+      </div>
+      <div class="tabela-rolagem" id="metricasComparar" hidden>
+        <table class="tabela">
+          <thead><tr><th scope="col">Modo</th><th scope="col">Ciclo</th><th scope="col">CPU em E/S</th><th scope="col">CPU livre</th><th scope="col">Aproveitamento</th><th scope="col">Interrupções</th><th scope="col">Bytes na RAM</th></tr></thead>
+          <tbody id="corpoComparar"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="painel" aria-labelledby="tituloDiagrama" id="painelDiagrama">
+      <h2 id="tituloDiagrama">Diagrama do hardware</h2>
+      <div class="diagrama-wrap">
+        <svg class="diagrama" viewBox="0 0 800 330" role="img" aria-labelledby="descDiagrama">
+          <title id="descDiagrama">CPU, controlador de interrupções, dispositivo, memória RAM e controlador DMA ligados pelo barramento do sistema</title>
+          <!-- Ligações: barramento de dados (sólidas) e linhas de IRQ (tracejadas) -->
+          <line class="lig" id="lig-bus" x1="140" y1="172" x2="660" y2="172"/>
+          <text class="rot-lig" x="470" y="164">barramento do sistema</text>
+          <line class="lig" id="lig-cpu" x1="140" y1="140" x2="140" y2="172"/>
+          <line class="lig" id="lig-ram" x1="140" y1="172" x2="140" y2="212"/>
+          <line class="lig" id="lig-dma" x1="440" y1="172" x2="440" y2="212"/>
+          <line class="lig" id="lig-dev" x1="660" y1="140" x2="660" y2="172"/>
+          <line class="lig irq" id="irq-dev" x1="560" y1="70" x2="500" y2="70"/>
+          <line class="lig irq" id="irq-cpu" x1="300" y1="70" x2="240" y2="70"/>
+          <path class="lig irq" id="irq-dma" d="M360 212 L360 110"/>
+          <text class="rot-lig" x="506" y="60">IRQ</text>
+          <text class="rot-lig" x="250" y="60">IRQ</text>
+          <text class="rot-lig" x="300" y="200">IRQ DMA</text>
+
+          <g class="comp" id="cpu">
+            <rect class="caixa" x="40" y="20" width="200" height="120" rx="10"/>
+            <text class="titulo" x="140" y="52" text-anchor="middle">CPU</text>
+            <text class="estado" id="cpuEstado" x="140" y="82" text-anchor="middle">Processo Útil</text>
+            <text class="estado" id="cpuDet" x="140" y="108" text-anchor="middle">aguardando início</text>
+          </g>
+          <g class="comp" id="plic">
+            <rect class="caixa" x="300" y="30" width="200" height="80" rx="10"/>
+            <text class="titulo" x="400" y="60" text-anchor="middle">Controlador de</text>
+            <text class="titulo" x="400" y="80" text-anchor="middle">Interrupções</text>
+            <text class="estado" id="plicEstado" x="400" y="100" text-anchor="middle">PLIC/IRQ · ocioso</text>
+          </g>
+          <g class="comp" id="dev">
+            <rect class="caixa" x="560" y="20" width="200" height="120" rx="10"/>
+            <text class="titulo" x="660" y="52" text-anchor="middle">Dispositivo de E/S</text>
+            <text class="estado" id="devEstado" x="660" y="80" text-anchor="middle">ocioso</text>
+            <rect class="barra-prog-fundo" x="590" y="98" width="140" height="10" rx="5"/>
+            <rect class="barra-prog" id="devProg" x="590" y="98" width="0" height="10" rx="5"/>
+            <text class="estado" id="devDet" x="660" y="130" text-anchor="middle">byte 0 de 0</text>
+          </g>
+          <g class="comp" id="ram">
+            <rect class="caixa" x="40" y="212" width="200" height="100" rx="10"/>
+            <text class="titulo" x="140" y="240" text-anchor="middle">Memória RAM (Buffer)</text>
+            <g id="ramSlots"></g>
+          </g>
+          <g class="comp" id="dma">
+            <rect class="caixa" x="340" y="212" width="200" height="100" rx="10"/>
+            <text class="titulo" x="440" y="244" text-anchor="middle">Controlador DMA</text>
+            <text class="estado" id="dmaEstado" x="440" y="272" text-anchor="middle">ocioso</text>
+            <text class="estado" id="dmaDet" x="440" y="296" text-anchor="middle"></text>
+          </g>
+        </svg>
+      </div>
+    </section>
+
+    <section class="painel" aria-labelledby="tituloGantt">
+      <h2 id="tituloGantt">Linha do tempo da CPU (Gantt ciclo a ciclo)</h2>
+      <div class="legenda" aria-hidden="true">
+        <span><i style="background:var(--util)"></i>Trabalho útil (processo)</span>
+        <span><i style="background:var(--espera)"></i>Busy-waiting / cópia pela CPU</span>
+        <span><i style="background:var(--isr)"></i>Interrupção (ISR) / configuração do DMA</span>
+        <span>⚡ IRQ sinalizada</span>
+      </div>
+      <div class="gantt-rolagem" id="ganttRolagem">
+        <div class="gantt" id="gantt"></div>
+      </div>
+    </section>
+
+    <section class="painel">
+      <details class="formulas" id="formulas">
+        <summary>Como os números são calculados (fórmulas do cenário atual)</summary>
+        <div id="formulasCorpo"></div>
+      </details>
+    </section>
+  </div>
+</main>
+
+<footer class="rodape">Projeto Integrador de Sistemas Operacionais · Grupo 6 – Entrada e Saída / Hardware · HTML, CSS e JavaScript puros</footer>
+
+<!-- =================== MODAL: AJUDA E CONCEITOS =================== -->
+<dialog class="ajuda" id="dlgAjuda" aria-labelledby="tituloAjuda">
+  <div class="ajuda-topo">
+    <h2 id="tituloAjuda">Ajuda e Conceitos</h2>
+    <button class="btn" type="button" id="btnFecharAjuda" title="Fechar (Esc)">✕ Fechar</button>
+  </div>
+  <div class="ajuda-corpo">
+    <h3>Como usar</h3>
+    <ol>
+      <li>Escolha o <b>modo</b> (ou "Comparar os 3") e ajuste os parâmetros, ou clique num <b>preset</b>.</li>
+      <li>Use <b>Próximo</b> (<kbd>→</kbd>) para avançar ciclo a ciclo, ou <b>Reproduzir</b> (<kbd>Espaço</kbd>).</li>
+      <li>Leia a frase em "O que aconteceu neste ciclo" e acompanhe o diagrama, o Gantt e as métricas.</li>
+      <li><b>Anterior</b> (<kbd>←</kbd>) volta um ciclo; <b>Reiniciar</b> (<kbd>R</kbd>) volta ao ciclo 0 sem mudar os parâmetros.</li>
+    </ol>
+
+    <h3>Os três mecanismos</h3>
+    <p><b>Polling (E/S programada):</b> a CPU fica num laço lendo o registrador de status do dispositivo até ele ficar pronto (<i>busy-waiting</i>) e depois copia o byte para a RAM ela mesma. Não há interrupções, mas a CPU não faz mais nada enquanto isso.</p>
+    <p><b>Interrupção:</b> enquanto o dispositivo trabalha, a CPU executa o processo útil. Quando o byte fica pronto, o dispositivo sinaliza uma IRQ ao controlador de interrupções, a CPU salva o contexto e executa a rotina de tratamento (ISR), que copia o byte. Há <b>uma interrupção por byte</b>.</p>
+    <p><b>DMA (Direct Memory Access):</b> a CPU só programa o controlador DMA (endereço do buffer e quantidade). O DMA leva cada byte do dispositivo para a RAM pelo barramento, sem a CPU, e gera <b>uma única interrupção</b> no fim do bloco.</p>
+
+    <h3>Cores da linha do tempo</h3>
+    <ul>
+      <li><b style="color:var(--util)">Verde</b>: a CPU está livre para o processo útil.</li>
+      <li><b style="color:var(--espera)">Vermelho</b>: a CPU está presa na E/S (busy-waiting ou copiando o byte no Polling).</li>
+      <li><b style="color:var(--isr)">Âmbar</b>: a CPU está tratando interrupção (troca de contexto + ISR) ou configurando o DMA.</li>
+    </ul>
+
+    <h3>Fórmulas usadas</h3>
+    <p>Com <code>N</code> = bytes, <code>L</code> = latência e <code>C</code> = custo de interrupção:</p>
+    <ul>
+      <li>Polling: total = <code>N × (L + 1)</code>; CPU em E/S = total; interrupções = 0.</li>
+      <li>Interrupção: total = <code>N × (L + C)</code>; CPU em E/S = <code>N × C</code>; interrupções = <code>N</code>.</li>
+      <li>DMA: total = <code>2 + N × L + C</code>; CPU em E/S = <code>2 + C</code>; interrupções = 1.</li>
+    </ul>
+
+    <h3>Relação com o xv6 (Capítulo 5 do livro: Interrupts and device drivers)</h3>
+    <p>O console do xv6 usa a <b>UART 16550</b> emulada pelo QEMU. Quando uma tecla chega, a UART gera uma interrupção; <code>devintr()</code> em <code>kernel/trap.c</code> pergunta ao PLIC qual IRQ chegou e chama <code>uartintr()</code> em <code>kernel/uart.c</code>, que lê <b>um caractere por vez</b> do registrador de recepção. É o modo <b>Interrupção</b> deste simulador.</p>
+    <p>A mesma UART também tem uma saída por <b>polling</b>: <code>uartputc_sync()</code> fica em laço lendo o registrador de status (LSR) até o transmissor ficar livre. O kernel usa isso no <code>printf</code>.</p>
+    <p>Já o disco <b>VirtIO</b> (<code>kernel/virtio_disk.c</code>) funciona como o modo <b>DMA</b>: o driver monta descritores apontando para o buffer na memória, o dispositivo lê/escreve o bloco inteiro direto na RAM e gera <b>uma interrupção</b> quando termina (<code>virtio_disk_intr()</code>).</p>
+
+    <h3>Simplificações</h3>
+    <p>Um dispositivo, uma CPU, latências fixas, sem FIFO na UART, sem cache, sem prioridades de IRQ e sem roubo de ciclos da CPU pelo DMA. O objetivo é mostrar a ordem dos eventos e o custo relativo de cada mecanismo.</p>
+  </div>
+</dialog>
+
+<script>
+"use strict";
+/* ==========================================================================
+   SIMULADOR DE E/S — Polling × Interrupção × DMA
+   --------------------------------------------------------------------------
+   Ideia geral:
+   1. Com os parâmetros (N bytes, L latência, C custo de interrupção), cada
+      modo gera ANTES uma linha do tempo completa: um vetor de objetos
+      "ciclo", um por ciclo de CPU (funções gerarPolling/gerarInterrupcao/
+      gerarDMA).
+   2. A navegação (Anterior/Próximo/Reproduzir) só muda o índice
+      estado.ciclo; a tela é redesenhada a partir do vetor (função render).
+      Assim, voltar um ciclo é exato e a simulação é determinística.
+   ========================================================================== */
+
+/* ---------- Constantes do modelo ---------- */
+const LIMITES = {
+  bytes:    { min: 2, max: 16, padrao: 4, nome: "Quantidade de bytes" },
+  latencia: { min: 2, max: 10, padrao: 4, nome: "Latência do dispositivo" },
+  custo:    { min: 1, max: 3,  padrao: 2, nome: "Custo de interrupção" }
+};
+const CICLOS_COPIA_POLLING = 1; // Polling: a CPU gasta 1 ciclo copiando cada byte para a RAM
+const CICLOS_CONFIG_DMA = 2;    // DMA: a CPU gasta 2 ciclos programando o controlador (endereço + contagem)
+
+const PRESETS = {
+  uart:   { nome: "Teclado/UART lento",  bytes: 3,  latencia: 10, custo: 2 },
+  virtio: { nome: "Disco VirtIO",        bytes: 16, latencia: 4,  custo: 2 },
+  alta:   { nome: "Alta taxa de dados",  bytes: 16, latencia: 2,  custo: 3 }
+};
+const NOMES_MODO = { polling: "Polling", interrupcao: "Interrupção", dma: "DMA", comparar: "Comparar os 3" };
+const MODOS_SIMPLES = ["polling", "interrupcao", "dma"];
+
+/* Ligações do diagrama (ids do SVG) usadas com frequência */
+const BUS_CPU_DEV = ["lig-cpu", "lig-bus", "lig-dev"];
+const BUS_CPU_DEV_RAM = ["lig-cpu", "lig-bus", "lig-dev", "lig-ram"];
+const BUS_CPU_DMA = ["lig-cpu", "lig-bus", "lig-dma"];
+const BUS_DMA_DEV_RAM = ["lig-dma", "lig-bus", "lig-dev", "lig-ram"];
+const TODAS_LIGACOES = ["lig-bus", "lig-cpu", "lig-ram", "lig-dma", "lig-dev", "irq-dev", "irq-cpu", "irq-dma"];
+
+/* ==========================================================================
+   GERAÇÃO DAS LINHAS DO TEMPO
+   Cada ciclo é um objeto:
+   {
+     cpu:      "util" | "espera" | "isr"   (cor no Gantt)
+     cpuTexto: rótulo mostrado na caixa da CPU
+     dev:      "ocioso" | "ocupado" | "pronto" | "aguardando" | "entregue"
+     devProg:  progresso do byte atual (0..1)
+     byte:     número do byte em andamento (1..N)
+     ligacoes: ids das ligações ativas no diagrama
+     irq:      true se uma IRQ foi sinalizada neste ciclo
+     plic:     texto de estado do controlador de interrupções
+     dma:      texto de estado do controlador DMA
+     paraRam:  true se um byte foi gravado na RAM neste ciclo
+     msg:      frase didática do ciclo
+   }
+   Depois, acumular() acrescenta os totais até aquele ciclo.
+   ========================================================================== */
+
+/** Cria um ciclo com valores padrão e sobrescreve com os campos informados. */
+function ciclo(campos) {
+  return Object.assign({
+    cpu: "util", cpuTexto: "Processo Útil", dev: "ocioso", devProg: 0, byte: 0,
+    ligacoes: [], irq: false, plic: "ocioso", dma: "ocioso", paraRam: false, msg: ""
+  }, campos);
+}
+
+/** POLLING: por byte, L ciclos de busy-waiting + 1 ciclo de cópia pela CPU. */
+function gerarPolling(p) {
+  const v = [];
+  for (let b = 1; b <= p.bytes; b++) {
+    for (let t = 1; t <= p.latencia; t++) {
+      const terminou = t === p.latencia;
+      v.push(ciclo({
+        cpu: "espera", cpuTexto: "Busy-Waiting", dev: terminou ? "pronto" : "ocupado",
+        devProg: t / p.latencia, byte: b, ligacoes: BUS_CPU_DEV,
+        msg: terminou
+          ? `Byte ${b}/${p.bytes}: a CPU lê o registrador de status de novo (${t}/${p.latencia}). Neste ciclo o dispositivo termina o byte e o status muda para PRONTO.`
+          : `Byte ${b}/${p.bytes}: a CPU lê o registrador de status (${t}/${p.latencia}) e ele ainda diz OCUPADO. A CPU repete o laço sem fazer trabalho útil (busy-waiting).`
+      }));
+    }
+    v.push(ciclo({
+      cpu: "espera", cpuTexto: "Cópia (E/S programada)", dev: "entregue", devProg: 1, byte: b,
+      ligacoes: BUS_CPU_DEV_RAM, paraRam: true,
+      msg: `Byte ${b}/${p.bytes}: a própria CPU lê o registrador de dados e grava o byte no buffer da RAM. Sem interrupção, mas a CPU continua presa na E/S.`
+    }));
+  }
+  return v;
+}
+
+/** INTERRUPÇÃO: por byte, L ciclos de trabalho útil (IRQ no último) + C ciclos de ISR. */
+function gerarInterrupcao(p) {
+  const v = [];
+  for (let b = 1; b <= p.bytes; b++) {
+    for (let t = 1; t <= p.latencia; t++) {
+      const terminou = t === p.latencia;
+      v.push(ciclo({
+        cpu: "util", cpuTexto: "Processo Útil", dev: terminou ? "pronto" : "ocupado",
+        devProg: t / p.latencia, byte: b,
+        ligacoes: terminou ? ["irq-dev", "irq-cpu"] : [],
+        irq: terminou, plic: terminou ? "IRQ do dispositivo → CPU" : "ocioso",
+        msg: terminou
+          ? `Byte ${b}/${p.bytes}: o dispositivo termina o byte e sinaliza uma IRQ. O controlador de interrupções (PLIC) avisa a CPU, que ainda executou o processo útil neste ciclo.`
+          : `Byte ${b}/${p.bytes}: o dispositivo trabalha (${t}/${p.latencia}) e a CPU executa o processo útil. Ninguém fica esperando.`
+      }));
+    }
+    for (let k = 1; k <= p.custo; k++) {
+      const ultimo = k === p.custo;
+      v.push(ciclo({
+        cpu: "isr", cpuTexto: "ISR", dev: ultimo ? "entregue" : "aguardando", devProg: 1, byte: b,
+        ligacoes: ultimo ? BUS_CPU_DEV_RAM : [], paraRam: ultimo,
+        plic: "atendendo IRQ",
+        msg: ultimo
+          ? (p.custo === 1
+              ? `Byte ${b}/${p.bytes}: em 1 ciclo a CPU salva o contexto, a ISR copia o byte do dispositivo para a RAM e o processo é retomado.`
+              : `Byte ${b}/${p.bytes}: a ISR copia o byte do dispositivo para a RAM, restaura o contexto e devolve a CPU ao processo (ISR ${k}/${p.custo}).`)
+          : `Byte ${b}/${p.bytes}: troca de contexto. A CPU salva o estado do processo e entra na rotina de tratamento da interrupção (ISR ${k}/${p.custo}).`
+      }));
+    }
+  }
+  return v;
+}
+
+/** DMA: 2 ciclos de configuração + N×L ciclos úteis (DMA copia cada byte) + C ciclos de ISR no fim. */
+function gerarDMA(p) {
+  const v = [];
+  for (let k = 1; k <= CICLOS_CONFIG_DMA; k++) {
+    v.push(ciclo({
+      cpu: "isr", cpuTexto: "Configurando DMA", ligacoes: BUS_CPU_DMA,
+      dma: k === 1 ? "recebendo endereço" : "recebendo contagem",
+      msg: k === 1
+        ? `Configuração (1/${CICLOS_CONFIG_DMA}): a CPU escreve no controlador DMA o endereço do buffer na RAM.`
+        : `Configuração (2/${CICLOS_CONFIG_DMA}): a CPU escreve a quantidade de bytes (${p.bytes}) e manda o DMA iniciar. A partir daqui a CPU fica livre.`
+    }));
+  }
+  for (let b = 1; b <= p.bytes; b++) {
+    for (let t = 1; t <= p.latencia; t++) {
+      const terminou = t === p.latencia;
+      const ultimoByte = b === p.bytes;
+      const lig = terminou ? BUS_DMA_DEV_RAM.slice() : [];
+      if (terminou && ultimoByte) lig.push("irq-dma", "irq-cpu");
+      v.push(ciclo({
+        cpu: "util", cpuTexto: "Processo Útil", dev: terminou ? "pronto" : "ocupado",
+        devProg: t / p.latencia, byte: b, ligacoes: lig, paraRam: terminou,
+        irq: terminou && ultimoByte, plic: terminou && ultimoByte ? "IRQ do DMA → CPU" : "ocioso",
+        dma: terminou ? `transferindo byte ${b}` : `aguardando byte ${b}`,
+        msg: terminou
+          ? (ultimoByte
+              ? `Byte ${b}/${p.bytes}: o DMA grava o último byte na RAM e sinaliza UMA IRQ de fim de bloco. A CPU continuou no processo útil.`
+              : `Byte ${b}/${p.bytes}: o DMA leva o byte do dispositivo para a RAM pelo barramento, sem usar a CPU.`)
+          : `Byte ${b}/${p.bytes}: o dispositivo prepara o byte (${t}/${p.latencia}); o DMA espera e a CPU executa o processo útil.`
+      }));
+    }
+  }
+  for (let k = 1; k <= p.custo; k++) {
+    const ultimo = k === p.custo;
+    v.push(ciclo({
+      cpu: "isr", cpuTexto: "ISR", ligacoes: ultimo ? BUS_CPU_DMA : [], plic: "atendendo IRQ",
+      dma: "bloco concluído", devProg: 1, byte: p.bytes,
+      msg: ultimo
+        ? `ISR (${k}/${p.custo}): a CPU confere o status do DMA, marca o buffer como pronto e volta ao processo. Foi a única interrupção do bloco.`
+        : `ISR (${k}/${p.custo}): a CPU salva o contexto e entra na rotina de tratamento da interrupção do DMA.`
+    }));
+  }
+  return v;
+}
+
+/** Acrescenta a cada ciclo os totais acumulados até ele (inclusive). */
+function acumular(v) {
+  let es = 0, util = 0, irq = 0, ram = 0;
+  v.forEach((c, i) => {
+    if (c.cpu === "util") util++; else es++;
+    if (c.irq) irq++;
+    if (c.paraRam) ram++;
+    Object.assign(c, { numero: i + 1, accES: es, accUtil: util, accIrq: irq, accRam: ram });
+  });
+  return v;
+}
+
+/** Gera a linha do tempo completa de um modo. */
+function gerarLinhaDoTempo(modo, p) {
+  const gerador = { polling: gerarPolling, interrupcao: gerarInterrupcao, dma: gerarDMA }[modo];
+  return acumular(gerador(p));
+}
+
+/** Resultados esperados pelas fórmulas fechadas (usados no painel e na auditoria). */
+function formulas(modo, p) {
+  const N = p.bytes, L = p.latencia, C = p.custo;
+  if (modo === "polling") {
+    const total = N * (L + CICLOS_COPIA_POLLING);
+    return { total, es: total, util: 0, irq: 0, ram: N };
+  }
+  if (modo === "interrupcao") return { total: N * (L + C), es: N * C, util: N * L, irq: N, ram: N };
+  return { total: CICLOS_CONFIG_DMA + N * L + C, es: CICLOS_CONFIG_DMA + C, util: N * L, irq: 1, ram: N };
+}
+
+/**
+ * Auditoria automática: gera as linhas do tempo para TODAS as combinações
+ * válidas de parâmetros e compara com as fórmulas fechadas.
+ * Retorna a lista de divergências (vazia = tudo certo). Rode no console: auditar()
+ */
+function auditar() {
+  const erros = [];
+  for (let N = LIMITES.bytes.min; N <= LIMITES.bytes.max; N++)
+    for (let L = LIMITES.latencia.min; L <= LIMITES.latencia.max; L++)
+      for (let C = LIMITES.custo.min; C <= LIMITES.custo.max; C++)
+        MODOS_SIMPLES.forEach(m => {
+          const p = { bytes: N, latencia: L, custo: C };
+          const v = gerarLinhaDoTempo(m, p), f = formulas(m, p), u = v[v.length - 1];
+          const obtido = { total: v.length, es: u.accES, util: u.accUtil, irq: u.accIrq, ram: u.accRam };
+          Object.keys(f).forEach(k => { if (f[k] !== obtido[k]) erros.push({ modo: m, p, campo: k, esperado: f[k], obtido: obtido[k] }); });
+        });
+  return erros;
+}
+
+/* ==========================================================================
+   ESTADO DA INTERFACE
+   ========================================================================== */
+const estado = {
+  modo: "polling",
+  params: { bytes: 4, latencia: 4, custo: 2 },
+  linhas: {},       // { polling: [...], interrupcao: [...], dma: [...] }
+  ciclo: 0,         // 0 = nada executado ainda; 1..total = ciclo exibido
+  tocando: false,
+  timer: null,
+  valido: true
+};
+
+const $ = id => document.getElementById(id);
+const campos = { bytes: $("inBytes"), latencia: $("inLatencia"), custo: $("inCusto") };
+const errosCampo = { bytes: $("erroBytes"), latencia: $("erroLatencia"), custo: $("erroCusto") };
+
+/** Modos exibidos no momento (1 ou 3). */
+function modosAtivos() { return estado.modo === "comparar" ? MODOS_SIMPLES : [estado.modo]; }
+
+/** Total de ciclos do cenário atual (no modo comparar, o maior dos três). */
+function totalCiclos() { return Math.max(...modosAtivos().map(m => estado.linhas[m].length)); }
+
+/* ==========================================================================
+   VALIDAÇÃO (prevenção e mensagens claras de erro)
+   ========================================================================== */
+function validarCampo(chave) {
+  const lim = LIMITES[chave], bruto = campos[chave].value.trim();
+  let erro = "";
+  if (bruto === "") erro = `${lim.nome}: preencha com um número inteiro de ${lim.min} a ${lim.max}.`;
+  else {
+    const n = Number(bruto);
+    if (!Number.isInteger(n)) erro = `${lim.nome}: use um número inteiro (sem vírgula). Valor informado: ${bruto}.`;
+    else if (n < lim.min || n > lim.max) erro = `${lim.nome} deve ficar entre ${lim.min} e ${lim.max}. Valor informado: ${n}.`;
+  }
+  errosCampo[chave].textContent = erro;
+  campos[chave].setAttribute("aria-invalid", erro ? "true" : "false");
+  return erro ? null : Number(bruto);
+}
+
+/** Lê e valida os 3 campos; se tudo estiver certo, reconstrói a simulação. */
+function aoMudarParametros() {
+  const novos = {};
+  let ok = true;
+  Object.keys(campos).forEach(k => { const v = validarCampo(k); if (v === null) ok = false; else novos[k] = v; });
+  estado.valido = ok;
+  $("avisoInvalido").textContent = ok ? "" : "Corrija o valor destacado para continuar. A simulação fica bloqueada até lá.";
+  if (ok) { estado.params = novos; reconstruir(); }
+  else { pausar(); render(); } // render mostra "Bloqueado: valor inválido" na linha de status
+}
+
+/* ==========================================================================
+   CONSTRUÇÃO / RESET
+   ========================================================================== */
+function reconstruir() {
+  pausar();
+  MODOS_SIMPLES.forEach(m => { estado.linhas[m] = gerarLinhaDoTempo(m, estado.params); });
+  estado.ciclo = 0;
+  montarRam();
+  montarGantt();
+  montarFormulas();
+  render();
+}
+
+/** Reiniciar: volta ao ciclo 0, sem alterar parâmetros, limpando diagrama, Gantt e métricas. */
+function reiniciar() {
+  pausar();
+  estado.ciclo = 0;
+  render();
+}
+
+/* ==========================================================================
+   NAVEGAÇÃO
+   ========================================================================== */
+function irPara(n) {
+  if (!estado.valido) return;
+  estado.ciclo = Math.max(0, Math.min(totalCiclos(), n));
+  if (estado.ciclo === totalCiclos()) pausar();
+  render();
+}
+function proximo() { irPara(estado.ciclo + 1); }
+function anterior() { pausar(); irPara(estado.ciclo - 1); }
+
+function reproduzir() {
+  if (!estado.valido) return;
+  if (estado.ciclo >= totalCiclos()) estado.ciclo = 0; // no fim, recomeça
+  estado.tocando = true;
+  agendar();
+  render();
+}
+function agendar() {
+  clearInterval(estado.timer);
+  estado.timer = setInterval(proximo, Number($("selVelocidade").value));
+}
+function pausar() {
+  estado.tocando = false;
+  clearInterval(estado.timer);
+  estado.timer = null;
+}
+function alternarPlay() { estado.tocando ? (pausar(), render()) : reproduzir(); }
+
+/* ==========================================================================
+   DESENHO
+   ========================================================================== */
+const SVGNS = "http://www.w3.org/2000/svg";
+
+/** Cria os N espaços do buffer na caixa da RAM. */
+function montarRam() {
+  const g = $("ramSlots");
+  g.innerHTML = "";
+  const N = estado.params.bytes, porLinha = 8, w = 18, h = 18, gap = 4;
+  const larg = porLinha * w + (porLinha - 1) * gap, x0 = 140 - larg / 2;
+  for (let i = 0; i < N; i++) {
+    const r = document.createElementNS(SVGNS, "rect");
+    r.setAttribute("x", x0 + (i % porLinha) * (w + gap));
+    r.setAttribute("y", 254 + Math.floor(i / porLinha) * (h + gap));
+    r.setAttribute("width", w); r.setAttribute("height", h); r.setAttribute("rx", 3);
+    r.setAttribute("class", "slot-ram");
+    g.appendChild(r);
+  }
+}
+
+/** Monta as células vazias do Gantt (uma linha por modo ativo). */
+function montarGantt() {
+  const g = $("gantt");
+  g.innerHTML = "";
+  const total = totalCiclos();
+  modosAtivos().forEach(m => {
+    const linha = document.createElement("div");
+    linha.className = "gantt-linha";
+    linha.dataset.modo = m;
+    const rot = document.createElement("div");
+    rot.className = "gantt-rot";
+    rot.textContent = NOMES_MODO[m];
+    linha.appendChild(rot);
+    for (let i = 1; i <= total; i++) {
+      const c = document.createElement("div");
+      c.className = "cel" + (i > estado.linhas[m].length ? " fim" : "");
+      c.textContent = i;
+      linha.appendChild(c);
+    }
+    g.appendChild(linha);
+  });
+}
+
+/** Painel "Como os números são calculados", com os valores do cenário. */
+function montarFormulas() {
+  const { bytes: N, latencia: L, custo: C } = estado.params;
+  const fP = formulas("polling", estado.params), fI = formulas("interrupcao", estado.params), fD = formulas("dma", estado.params);
+  const pct = f => (100 * f.util / f.total).toFixed(1).replace(".", ",") + "%";
+  $("formulasCorpo").innerHTML = `
+    <p>Cenário: <code>N = ${N}</code> bytes, <code>L = ${L}</code> ciclos de latência, <code>C = ${C}</code> ciclos por interrupção.</p>
+    <ul>
+      <li><b>Polling</b>: total = N × (L + 1) = ${N} × (${L} + 1) = <b>${fP.total}</b> ciclos · CPU em E/S = ${fP.es} · livre = 0 · aproveitamento ${pct(fP)} · interrupções 0.</li>
+      <li><b>Interrupção</b>: total = N × (L + C) = ${N} × (${L} + ${C}) = <b>${fI.total}</b> · CPU em E/S = N × C = ${fI.es} · livre = N × L = ${fI.util} · aproveitamento ${pct(fI)} · interrupções = N = ${fI.irq}.</li>
+      <li><b>DMA</b>: total = 2 + N × L + C = 2 + ${N} × ${L} + ${C} = <b>${fD.total}</b> · CPU em E/S = 2 + C = ${fD.es} · livre = N × L = ${fD.util} · aproveitamento ${pct(fD)} · interrupções = 1.</li>
+    </ul>
+    <p>Aproveitamento = ciclos livres ÷ ciclos executados até o ciclo atual.</p>`;
+}
+
+function pctTexto(util, total) {
+  return total === 0 ? "0%" : (100 * util / total).toFixed(1).replace(".", ",") + "%";
+}
+
+/** Valores acumulados de um modo no ciclo atual (o modo pode já ter terminado). */
+function resumoModo(m) {
+  const v = estado.linhas[m], n = Math.min(estado.ciclo, v.length);
+  const c = n > 0 ? v[n - 1] : null;
+  return {
+    n, total: v.length, atual: c,
+    es: c ? c.accES : 0, util: c ? c.accUtil : 0, irq: c ? c.accIrq : 0, ram: c ? c.accRam : 0,
+    acabou: estado.ciclo >= v.length
+  };
+}
+
+function render() {
+  const total = totalCiclos(), comparar = estado.modo === "comparar";
+
+  /* --- status --- */
+  $("stModo").textContent = NOMES_MODO[estado.modo];
+  $("stCenario").textContent = `${estado.params.bytes} bytes · latência ${estado.params.latencia} · custo ${estado.params.custo}`;
+  $("stEstado").textContent = !estado.valido ? "Bloqueado: valor inválido"
+    : estado.tocando ? "Reproduzindo"
+    : estado.ciclo === 0 ? "Pronto para iniciar"
+    : estado.ciclo >= total ? "Concluído" : "Pausado";
+
+  /* --- métricas --- */
+  $("metricasUnico").hidden = comparar;
+  $("metricasComparar").hidden = !comparar;
+  $("painelDiagrama").hidden = comparar;
+  if (comparar) {
+    $("corpoComparar").innerHTML = MODOS_SIMPLES.map(m => {
+      const r = resumoModo(m);
+      return `<tr><th scope="row">${NOMES_MODO[m]}</th><td>${r.n} / ${r.total}${r.acabou ? " ✓" : ""}</td><td>${r.es}</td><td>${r.util}</td><td>${pctTexto(r.util, r.n)}</td><td>${r.irq}</td><td>${r.ram} / ${estado.params.bytes}</td></tr>`;
+    }).join("");
+  } else {
+    const r = resumoModo(estado.modo);
+    $("mCiclo").textContent = `${estado.ciclo} / ${total}`;
+    $("mES").textContent = r.es;
+    $("mLivre").textContent = r.util;
+    $("mAprov").textContent = pctTexto(r.util, r.n);
+    $("mIrq").textContent = r.irq;
+    $("mBytes").textContent = `${r.ram} / ${estado.params.bytes}`;
+    desenharDiagrama(r.atual);
+  }
+
+  /* --- explicação --- */
+  const exp = $("explicacao");
+  if (estado.ciclo === 0) {
+    exp.innerHTML = `<p><span class="ciclo-rot">Ciclo 0</span>Nada executado ainda. Clique em <b>Próximo</b> (→) para avançar um ciclo ou em <b>Reproduzir</b> (Espaço).</p>`;
+  } else if (comparar) {
+    exp.innerHTML = `<p><span class="ciclo-rot">Ciclo ${estado.ciclo}</span></p><div class="mensagens-comparar">` +
+      MODOS_SIMPLES.map(m => {
+        const r = resumoModo(m);
+        const txt = estado.ciclo > r.total ? `já terminou no ciclo ${r.total}.` : r.atual.msg;
+        return `<p><b>${NOMES_MODO[m]}:</b> ${txt}</p>`;
+      }).join("") + `</div>` + (estado.ciclo >= total ? conclusaoComparar() : "");
+  } else {
+    const c = estado.linhas[estado.modo][estado.ciclo - 1];
+    exp.innerHTML = `<p><span class="ciclo-rot">Ciclo ${estado.ciclo}</span>${c.msg}</p>` +
+      (estado.ciclo >= total ? `<p><b>Fim:</b> ${estado.params.bytes} bytes na RAM em ${total} ciclos, com ${c.accIrq} interrupção(ões) e ${pctTexto(c.accUtil, total)} da CPU livre.</p>` : "");
+  }
+
+  /* --- Gantt --- */
+  document.querySelectorAll(".gantt-linha").forEach(linha => {
+    const v = estado.linhas[linha.dataset.modo];
+    linha.querySelectorAll(".cel").forEach((cel, i) => {
+      if (i >= v.length) return;
+      const c = v[i], feito = i < estado.ciclo;
+      cel.className = "cel" + (feito ? " " + c.cpu : "") + (i === estado.ciclo - 1 ? " atual" : "");
+      cel.innerHTML = (feito && c.irq ? '<span class="raio" aria-hidden="true">⚡</span>' : "") + (i + 1);
+      cel.title = feito ? `Ciclo ${i + 1}: ${c.cpuTexto}${c.irq ? " + IRQ" : ""}` : `Ciclo ${i + 1}: ainda não executado`;
+    });
+  });
+  const atual = document.querySelector(".cel.atual");
+  if (atual) {
+    const rol = $("ganttRolagem"), x = atual.offsetLeft - rol.clientWidth / 2;
+    rol.scrollLeft = Math.max(0, x);
+  } else $("ganttRolagem").scrollLeft = 0;
+
+  atualizarBotoes();
+}
+
+function conclusaoComparar() {
+  const r = MODOS_SIMPLES.map(m => ({ m, ...resumoModo(m) }));
+  const melhor = r.reduce((a, b) => (b.util / b.total > a.util / a.total ? b : a));
+  return `<p><b>Resultado:</b> ` + r.map(x => `${NOMES_MODO[x.m]} ${x.total} ciclos (${pctTexto(x.util, x.total)} livre, ${x.irq} IRQ)`).join(" · ") +
+    `. Maior aproveitamento da CPU: <b>${NOMES_MODO[melhor.m]}</b>.</p>`;
+}
+
+/** Atualiza o SVG para o ciclo c (null = estado inicial, tudo limpo). */
+function desenharDiagrama(c) {
+  const modo = estado.modo;
+  TODAS_LIGACOES.forEach(id => $(id).classList.toggle("ativa", !!c && c.ligacoes.includes(id)));
+
+  // CPU
+  const cpu = $("cpu");
+  cpu.classList.remove("util", "espera", "isr");
+  if (c) cpu.classList.add(c.cpu);
+  $("cpuEstado").textContent = c ? c.cpuTexto : "Processo Útil";
+  $("cpuDet").textContent = c ? ({ util: "livre para o processo", espera: "presa na E/S", isr: "tratando E/S" }[c.cpu]) : "aguardando início";
+
+  // Controlador de interrupções (não é usado no Polling)
+  const plic = $("plic");
+  plic.classList.toggle("inativo", modo === "polling");
+  plic.classList.toggle("ativo", !!c && (c.irq || c.plic === "atendendo IRQ"));
+  $("plicEstado").textContent = modo === "polling" ? "não usado no Polling" : "PLIC/IRQ · " + (c ? c.plic : "ocioso");
+
+  // Dispositivo
+  const dev = $("dev");
+  dev.classList.remove("ocupado", "pronto");
+  if (c && (c.dev === "ocupado" || c.dev === "pronto")) dev.classList.add(c.dev);
+  $("devEstado").textContent = c ? ({ ocioso: "ocioso", ocupado: "ocupado", pronto: "PRONTO", aguardando: "aguardando leitura", entregue: "byte entregue" }[c.dev]) : "ocioso";
+  $("devProg").setAttribute("width", c ? Math.round(140 * c.devProg) : 0);
+  $("devDet").textContent = c ? `byte ${c.byte || 0} de ${estado.params.bytes}` : `byte 0 de ${estado.params.bytes}`;
+
+  // DMA (só usado no modo DMA)
+  const dma = $("dma");
+  dma.classList.toggle("inativo", modo !== "dma");
+  dma.classList.toggle("ativo", !!c && modo === "dma" && c.dma !== "ocioso");
+  $("dmaEstado").textContent = modo !== "dma" ? "não usado neste modo" : (c ? c.dma : "ocioso");
+  $("dmaDet").textContent = modo === "dma" && c ? `${c.accRam}/${estado.params.bytes} bytes copiados` : "";
+
+  // RAM
+  const n = c ? c.accRam : 0;
+  $("ramSlots").querySelectorAll("rect").forEach((r, i) => r.classList.toggle("cheio", i < n));
+  $("ram").classList.toggle("ativo", !!c && c.paraRam);
+}
+
+function atualizarBotoes() {
+  const total = estado.valido ? totalCiclos() : 0;
+  $("btnAnterior").disabled = !estado.valido || estado.ciclo === 0;
+  $("btnProximo").disabled = !estado.valido || estado.ciclo >= total;
+  $("btnReiniciar").disabled = !estado.valido;
+  $("btnPlay").disabled = !estado.valido;
+  $("btnPlay").textContent = estado.tocando ? "⏸ Pausar" : (estado.ciclo >= total && total > 0 ? "▶ Reproduzir de novo" : "▶ Reproduzir");
+}
+
+/* ==========================================================================
+   EVENTOS
+   ========================================================================== */
+document.querySelectorAll('input[name="modo"]').forEach(r => r.addEventListener("change", () => {
+  estado.modo = r.value;
+  if (estado.valido) reconstruir(); else render();
+}));
+Object.values(campos).forEach(c => c.addEventListener("input", () => { $("avisoPreset").textContent = ""; aoMudarParametros(); }));
+
+function aplicarValores(v) {
+  campos.bytes.value = v.bytes; campos.latencia.value = v.latencia; campos.custo.value = v.custo;
+  aoMudarParametros();
+}
+document.querySelectorAll("[data-preset]").forEach(b => b.addEventListener("click", () => {
+  const p = PRESETS[b.dataset.preset];
+  aplicarValores(p);
+  $("avisoPreset").textContent = `Preset "${p.nome}" aplicado. Os valores podem ser ajustados nos campos acima.`;
+}));
+$("btnPadrao").addEventListener("click", () => {
+  aplicarValores({ bytes: LIMITES.bytes.padrao, latencia: LIMITES.latencia.padrao, custo: LIMITES.custo.padrao });
+  $("avisoPreset").textContent = "Valores padrão restaurados (4 bytes, latência 4, custo 2).";
+});
+
+$("btnProximo").addEventListener("click", () => { pausar(); proximo(); });
+$("btnAnterior").addEventListener("click", anterior);
+$("btnPlay").addEventListener("click", alternarPlay);
+$("btnReiniciar").addEventListener("click", reiniciar);
+$("selVelocidade").addEventListener("change", () => { if (estado.tocando) agendar(); });
+
+const dlg = $("dlgAjuda");
+$("btnAjuda").addEventListener("click", () => dlg.showModal());
+$("btnFecharAjuda").addEventListener("click", () => dlg.close());
+dlg.addEventListener("click", e => { if (e.target === dlg) dlg.close(); }); // clique fora fecha
+
+/* Atalhos de teclado (ignorados enquanto se digita num campo ou com a ajuda aberta) */
+document.addEventListener("keydown", e => {
+  if (dlg.open || e.ctrlKey || e.altKey || e.metaKey) return;
+  const alvo = e.target.tagName;
+  if (alvo === "INPUT" || alvo === "SELECT" || alvo === "TEXTAREA") return;
+  if (e.key === "ArrowRight") { e.preventDefault(); pausar(); proximo(); }
+  else if (e.key === "ArrowLeft") { e.preventDefault(); anterior(); }
+  else if (e.key === " ") { e.preventDefault(); alternarPlay(); } // Espaço sempre reproduz/pausa (Enter continua ativando o botão focado)
+  else if (e.key === "r" || e.key === "R") { e.preventDefault(); reiniciar(); }
+  else if (e.key === "h" || e.key === "H" || e.key === "?") { e.preventDefault(); dlg.showModal(); }
+});
+
+/* Início */
+reconstruir();
+const divergencias = auditar();
+if (divergencias.length) console.error("Auditoria das fórmulas falhou:", divergencias);
+</script>
+</body>
+</html>
